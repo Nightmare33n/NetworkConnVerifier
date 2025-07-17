@@ -47,4 +47,4 @@ python NetConnVerGUI.py
 
 ---
 
-**Hecho con ❤️ para monitorear tu red como un pro.** 
+**Hecho con el pito para monitorear tu red como un pro.** 
