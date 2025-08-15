@@ -34,11 +34,22 @@ except ImportError:
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+try:
+    import numpy as np
+    from scipy.interpolate import make_interp_spline
+except ImportError:
+    import os
+    import sys
+    print("Instalando scipy y numpy...")
+    os.system(f"{sys.executable} -m pip install scipy numpy")
+    import numpy as np
+    from scipy.interpolate import make_interp_spline
+
 
 PING_TARGET = "google.com"
-PING_TIMEOUT = 0.2
+PING_TIMEOUT = 1  # segundos
 HISTORIAL_SIZE = 400  # Un poco más largo para barras
-FALLOS_PARA_DESCONECTADO = 3
+FALLOS_PARA_DESCONECTADO = 5
 VISIBLE_BARS = 200  # Solo muestra los últimos 200
 
 # Paleta inspirada en el Administrador de tareas de Windows
@@ -141,10 +152,17 @@ class NetConnVerGUI:
         self.ax.spines['top'].set_color(GRID_COLOR)
         self.ax.spines['right'].set_color(GRID_COLOR)
         self.ax.spines['left'].set_color(GRID_COLOR)
-        self.line_collection = None
-        self.line, = self.ax.plot([], [], color=FG_LIGHT, linewidth=2, alpha=0.95)
+        
+        self.line_collection = LineCollection([], linewidths=2)
+        self.ax.add_collection(self.line_collection)
+        
+        self.barras_collection = LineCollection([], linewidths=1)
+        self.ax.add_collection(self.barras_collection)
+
+        self.line_smooth, = self.ax.plot([], [], color=GREEN, linewidth=2, alpha=0.95)
+
         self.fill = None
-        self.barras_collection = None
+        
         self.ax.set_ylabel("Ping (ms)", color=FG_LIGHT, fontsize=13)
         self.ax.set_xlabel("Tiempo", color=FG_LIGHT, fontsize=13)
         self.ax.grid(True, color=GRID_COLOR, linestyle='-', alpha=0.5)
@@ -173,7 +191,7 @@ class NetConnVerGUI:
             self.historial.append(ping_time)
             self.time_hist.append(t)
             self._update_status()
-            time.sleep(0.01)
+            time.sleep(0.1)
 
     def _update_status(self):
         # Determinar estado
@@ -205,7 +223,7 @@ class NetConnVerGUI:
 
     def _update_all(self):
         self._update_plot()
-        self.root.after(10, self._update_all)  # Refresco cada 0.01s
+        self.root.after(100, self._update_all)  # Refresco cada 0.1s
 
     def _color_for_ping(self, ping):
         if ping is None or math.isnan(ping):
@@ -229,56 +247,39 @@ class NetConnVerGUI:
         if not y:
             return
         x = list(range(-len(y)+1, 1))
+
         if self.grafica_modo.get() == "clasic":
-            # Multicolor: cada segmento de la línea tiene su color
-            if self.line_collection:
-                self.line_collection.remove()
-                self.line_collection = None
-            segments = []
-            colors = []
-            # Calcular promedio local (ventana de 10)
-            window = 10
-            for i in range(1, len(x)):
-                if math.isnan(y[i-1]) or math.isnan(y[i]):
-                    color = self._color_for_ping(None)
-                else:
-                    # Promedio local
-                    start = max(0, i-window)
-                    local_vals = [v for v in y[start:i+1] if not math.isnan(v)]
-                    if local_vals:
-                        local_avg = sum(local_vals) / len(local_vals)
-                    else:
-                        local_avg = y[i-1]
-                    # Detectar picos
-                    if y[i] - local_avg > 80:
-                        color = '#ff3576'  # Rojo para pico grande
-                    elif y[i] - local_avg > 30:
-                        color = '#ffe347'  # Amarillo para pico leve
-                    else:
-                        color = self._color_for_ping((y[i-1]+y[i])/2)
-                segments.append([(x[i-1], y[i-1]), (x[i], y[i])])
-                colors.append(color)
-            if segments:
-                self.line_collection = LineCollection(segments, colors=colors, linewidths=2)
-                self.ax.add_collection(self.line_collection)
-            self.line.set_data([], [])
+            self.barras_collection.set_visible(False)
+            self.line_collection.set_visible(False)
+            self.line_smooth.set_visible(True)
+            if self.fill:
+                self.fill.set_visible(True)
+
+            y_numeric = [v for v in y if not math.isnan(v)]
+            x_numeric = [x[i] for i, v in enumerate(y) if not math.isnan(v)]
+
+            if len(x_numeric) > 3:
+                x_smooth = np.linspace(min(x_numeric), max(x_numeric), 300)
+                spl = make_interp_spline(x_numeric, y_numeric, k=3)
+                y_smooth = spl(x_smooth)
+                self.line_smooth.set_data(x_smooth, y_smooth)
+            else:
+                self.line_smooth.set_data(x_numeric, y_numeric)
+
+
             if self.fill:
                 self.fill.remove()
-                self.fill = None
-            # Área bajo la curva: color según último punto
+            
             ultimo_color = self._color_for_ping(y[-1])
-            self.fill = self.ax.fill_between(x, y, [0]*len(y), color=ultimo_color, alpha=FILL_ALPHA)
-            if self.barras_collection:
-                self.barras_collection.remove()
-                self.barras_collection = None
-        else:
-            if self.line_collection:
-                self.line_collection.remove()
-                self.line_collection = None
-            self.line.set_data([], [])
+            self.fill = self.ax.fill_between(x, y, [0]*len(y), color=ultimo_color, alpha=FILL_ALPHA, interpolate=True)
+
+        else: # minecraft mode
+            self.line_collection.set_visible(False)
+            self.line_smooth.set_visible(False)
             if self.fill:
-                self.fill.remove()
-                self.fill = None
+                self.fill.set_visible(False)
+            self.barras_collection.set_visible(True)
+
             x_bars = x[-VISIBLE_BARS:]
             y_bars = y[-VISIBLE_BARS:]
             segments = []
@@ -292,12 +293,10 @@ class NetConnVerGUI:
                     height = val
                 segments.append([(xpos, 0), (xpos, height)])
                 colors.append(color)
-            if self.barras_collection:
-                self.barras_collection.set_segments(segments)
-                self.barras_collection.set_color(colors)
-            else:
-                self.barras_collection = LineCollection(segments, colors=colors, linewidths=1)
-                self.ax.add_collection(self.barras_collection)
+            
+            self.barras_collection.set_segments(segments)
+            self.barras_collection.set_color(colors)
+
         self.ax.set_xlim(-VISIBLE_BARS+1, 0)
         if y and not all(math.isnan(v) for v in y):
             self.ax.set_ylim(0, max([v for v in y if not math.isnan(v)]+[100])+20)
@@ -306,11 +305,9 @@ class NetConnVerGUI:
         self.canvas.draw()
 
     def _animar_estado(self):
-        # Transición suave de color del círculo
         color_destino = ESTADOS[self.estado_actual]['color']
         r1, g1, b1 = self._hex_to_rgb(self.color_actual)
         r2, g2, b2 = self._hex_to_rgb(color_destino)
-        # Interpolación
         r = int(r1 + (r2 - r1) * 0.2)
         g = int(g1 + (g2 - g1) * 0.2)
         b = int(b1 + (b2 - b1) * 0.2)
@@ -322,7 +319,7 @@ class NetConnVerGUI:
     def _hex_to_rgb(self, hexcolor):
         hexcolor = (hexcolor or '#444').lstrip('#')
         if len(hexcolor) != 6:
-            hexcolor = '444444'  # color de respaldo seguro
+            hexcolor = '444444'
         return tuple(int(hexcolor[i:i+2], 16) for i in (0, 2, 4))
 
 if __name__ == "__main__":
